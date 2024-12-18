@@ -7,10 +7,21 @@ import random
 from sklearn.model_selection import train_test_split
 from data_reader import MaldiDataset
 import numpy as np
+import pandas as pd
 from scipy.spatial.distance import euclidean
 from sklearn.neighbors import KNeighborsClassifier
 from collections import Counter
 import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn.linear_model import Lasso
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+from collections import Counter
+# from tensorflow.keras.models import Model
+# from tensorflow.keras.layers import Input, Dense, Lambda
+# from tensorflow.keras.losses import mse
+# from tensorflow.keras import backend as K
 
 # Set all seeds to make the results reproducible
 random.seed(42)
@@ -55,6 +66,7 @@ class SimpleFungusIdentifier:
             split_index = int(len(unique_ids_for_genus_species) * (1 - self.test_size))
             train_unique_ids.extend(unique_ids_for_genus_species[:split_index])
             test_unique_ids.extend(unique_ids_for_genus_species[split_index:])
+
         # Filter the data based on the train and test unique_ids
         self.train_data = [sample for sample in data if sample['unique_id_label'] in train_unique_ids]
         self.test_data = [sample for sample in data if sample['unique_id_label'] in test_unique_ids]
@@ -73,10 +85,275 @@ class SimpleFungusIdentifier:
         # total number of classes to predict (genus+species)
         print(f"Number of classes to predict: {len(set([entry['genus_species_label'] for entry in self.train_data]))}")
 
+        # Prepare spectra
+        train_spectra = np.array([sample['spectrum'] for sample in self.train_data])
+        test_spectra = np.array([sample['spectrum'] for sample in self.test_data])
+        train_labels = [sample['genus_species_label'] for sample in self.train_data]
+        test_labels = [sample['genus_species_label'] for sample in self.test_data]
+
+        # # -------------------------------------------------------------------------------------------------------------------------
+        
+        # PCA
+        # Apply PCA for dimensionality reduction
+        n_components = 70  # You can tune this parameter
+        pca = PCA(n_components=n_components)
+        train_spectra_pca = pca.fit_transform(train_spectra)
+        test_spectra_pca = pca.transform(test_spectra)
+
+        print(f"Explained Variance Ratio (first {n_components} components): {sum(pca.explained_variance_ratio_):.2f}")
+
+        # Identify minority classes
+        label_counts = Counter(train_labels)
+        threshold = 0.1 * max(label_counts.values())
+        minority_classes = [cls for cls, count in label_counts.items() if count < threshold]
+        print(f"Minority Classes (threshold {threshold}): {minority_classes}")
+
+        # Apply SMOTE only to minority classes
+        smote = SMOTE(random_state=42)
+        train_spectra_smote, train_labels_smote = smote.fit_resample(train_spectra_pca, train_labels)
+
+        print(f"Class distribution before SMOTE: {label_counts}")
+        print(f"Class distribution after SMOTE: {Counter(train_labels_smote)}")
+
+        # Reformat SMOTE-transformed training data
+        self.train_data_smote = [
+            {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+            for spectrum, label in zip(train_spectra_smote, train_labels_smote)
+        ]
+
+        # Reformat PCA-transformed test data
+        self.test_data_pca = [
+            {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+            for spectrum, label in zip(test_spectra_pca, [entry['genus_species_label'] for entry in self.test_data])
+        ]
+
+        # # --------------------------------------------------------------------------------------------------------------------------
+
+        # # VAEs + PCA + SMOTE
+
+        # # After splitting train/test data
+        # threshold = 10  # Minimum number of samples required
+        # underrepresented_classes = [label for label, count in Counter(train_labels).items() if count < threshold]
+
+        # print(f"Underrepresented classes (less than {threshold} samples): {underrepresented_classes}")
+
+        # input_dim = len(train_spectra[0])  # Dimension of spectra
+        # latent_dim = 5  # Small latent dimension
+
+        # # Train VAE for underrepresented classes and generate synthetic data
+        # for target_class in underrepresented_classes:
+        #     print(f"Generating data for class: {target_class}")
+        #     class_data = np.array([sample['spectrum'] for sample in self.train_data if sample['genus_species_label'] == target_class])
+            
+        #     if len(class_data) == 0:
+        #         continue
+
+        #     # Build and train VAE
+        #     vae = build_vae(input_dim, latent_dim)
+        #     vae.fit(class_data, class_data, epochs=50, batch_size=16, verbose=0)
+
+        #     # Generate synthetic spectra
+        #     synthetic_spectra = self.generate_synthetic_data(vae, class_data, num_samples=10)
+        #     for spectrum in synthetic_spectra:
+        #         self.train_data.append({'spectrum': spectrum, 'genus_species_label': target_class, 'genus_label': target_class.split()[0]})
+
+        # # Apply PCA
+        # print("Applying PCA...")
+        # train_spectra = np.array([sample['spectrum'] for sample in self.train_data])
+        # test_spectra = np.array([sample['spectrum'] for sample in self.test_data])
+
+        # # Apply PCA for dimensionality reduction
+        # n_components = 70  # You can tune this parameter
+        # pca = PCA(n_components=n_components)
+        # train_spectra_pca = pca.fit_transform(train_spectra)
+        # test_spectra_pca = pca.transform(test_spectra)
+
+        # print(f"Explained Variance Ratio (first {n_components} components): {sum(pca.explained_variance_ratio_):.2f}")
+
+        # # Apply SMOTE only to minority classes
+        # smote = SMOTE(random_state=42)
+        # train_spectra_smote, train_labels_smote = smote.fit_resample(train_spectra_pca, train_labels)
+
+        # # Debug: Print class distribution before and after SMOTE
+        # print(f"Class distribution before SMOTE: {Counter(train_labels)}")
+        # print(f"Class distribution after SMOTE: {Counter(train_labels_smote)}")
+
+        # # Reformat SMOTE-transformed training data
+        # self.train_data_smote = [
+        #     {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+        #     for spectrum, label in zip(train_spectra_smote, train_labels_smote)
+        # ]
+
+        # # Reformat PCA-transformed test data
+        # self.test_data_pca = [
+        #     {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+        #     for spectrum, label in zip(test_spectra_pca, [entry['genus_species_label'] for entry in self.test_data])
+        # ]
+
+        # # --------------------------------------------------------------------------------------------------------------------------
+
+        # # LASSO
+        # # Prepare spectra and labels
+        # train_spectra = np.array([sample['spectrum'] for sample in self.train_data])
+        # test_spectra = np.array([sample['spectrum'] for sample in self.test_data])
+        # train_labels = [sample['genus_species_label'] for sample in self.train_data]
+        # test_labels = [sample['genus_species_label'] for sample in self.test_data]
+
+        # # Standardize the spectra (required for LASSO)
+        # scaler = StandardScaler()
+        # train_spectra_scaled = scaler.fit_transform(train_spectra)
+        # test_spectra_scaled = scaler.transform(test_spectra)
+
+        # # Apply LASSO for feature selection
+        # alpha = 0.001  # Regularization strength (tune this value)
+        # lasso = Lasso(alpha=alpha, max_iter=10000)  # Increase iterations
+
+        # # Encode string labels to numerical values
+        # label_encoder = LabelEncoder()
+        # train_labels_encoded = label_encoder.fit_transform(train_labels)
+
+        # # Fit LASSO
+        # lasso.fit(train_spectra_scaled, train_labels_encoded)
+
+        # # Select non-zero features
+        # selected_features = np.where(lasso.coef_ != 0)[0]
+        # print(f"Number of selected features: {len(selected_features)}")
+
+        # # Reduce train and test spectra to selected features
+        # train_spectra_lasso = train_spectra_scaled[:, selected_features]
+        # test_spectra_lasso = test_spectra_scaled[:, selected_features]
+
+        # # Replace original train and test data with LASSO-transformed spectra
+        # # Reformat LASSO data to match original train/test data format
+        # self.train_data_lasso = [
+        #     {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+        #     for spectrum, label in zip(train_spectra_lasso, train_labels)
+        # ]
+
+        # self.test_data_lasso = [
+        #     {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+        #     for spectrum, label in zip(test_spectra_lasso, test_labels)
+        # ]
+
+    
+    # # Grid-search PCA + LASSO
+    # def grid_search_pca_lasso(self, n_components_list, alpha_list):
+    #     results = []
+
+    #     for n_components in n_components_list:
+    #         for alpha in alpha_list:
+    #             print(f"Testing n_components={n_components}, alpha={alpha}...")
+
+    #             # Standardize the spectra
+    #             train_spectra = np.array([sample['spectrum'] for sample in self.train_data])
+    #             test_spectra = np.array([sample['spectrum'] for sample in self.test_data])
+    #             train_labels = [sample['genus_species_label'] for sample in self.train_data]
+    #             test_labels = [sample['genus_species_label'] for sample in self.test_data]
+
+    #             scaler = StandardScaler()
+    #             train_spectra_scaled = scaler.fit_transform(train_spectra)
+    #             test_spectra_scaled = scaler.transform(test_spectra)
+
+    #             # Apply PCA
+    #             pca = PCA(n_components=n_components)
+    #             train_spectra_pca = pca.fit_transform(train_spectra_scaled)
+    #             test_spectra_pca = pca.transform(test_spectra_scaled)
+
+    #             # Apply LASSO
+    #             lasso = Lasso(alpha=alpha, max_iter=10000)
+    #             # Encode string labels to numerical values
+    #             label_encoder = LabelEncoder()
+    #             train_labels_encoded = label_encoder.fit_transform(train_labels)
+
+    #             # Fit LASSO
+    #             lasso.fit(train_spectra_pca, train_labels_encoded)
+    #             selected_features = np.where(lasso.coef_ != 0)[0]
+
+    #             # If no features are selected, skip this combination
+    #             if len(selected_features) == 0:
+    #                 print("No features selected. Skipping...")
+    #                 continue
+
+    #             train_spectra_lasso = train_spectra_pca[:, selected_features]
+    #             test_spectra_lasso = test_spectra_pca[:, selected_features]
+
+    #             # Prepare data in correct format
+    #             self.train_data_lasso = [
+    #                 {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+    #                 for spectrum, label in zip(train_spectra_lasso, train_labels)
+    #             ]
+
+    #             self.test_data_lasso = [
+    #                 {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+    #                 for spectrum, label in zip(test_spectra_lasso, test_labels)
+    #             ]
+
+    #             # Train and evaluate classifiers
+    #             print("Training classifiers...")
+    #             self.naive_classifier(labels="genus_species")
+    #             naive_accuracy, _, _ = self.evaluate_naive_classifier(labels="genus_species")
+
+    #             knn = self.knn_classifier(n_neighbors=5, labels="genus_species")
+    #             knn_accuracy, _, _ = self.evaluate_knn_classifier(knn, labels="genus_species")
+
+    #             # Store results
+    #             results.append({
+    #                 'n_components': n_components,
+    #                 'alpha': alpha,
+    #                 'naive_accuracy': naive_accuracy,
+    #                 'knn_accuracy': knn_accuracy,
+    #                 'num_features_selected': len(selected_features)
+    #             })
+
+    #     # Convert results to DataFrame for better visualization
+    #     results_df = pd.DataFrame(results)
+    #     print(results_df)
+    #     return results_df
+
+
+    # def build_vae(input_dim, latent_dim=2):
+    #     # Encoder
+    #     inputs = Input(shape=(input_dim,))
+    #     h = Dense(64, activation='relu')(inputs)
+    #     z_mean = Dense(latent_dim)(h)
+    #     z_log_var = Dense(latent_dim)(h)
+
+    #     # Sampling
+    #     def sampling(args):
+    #         z_mean, z_log_var = args
+    #         epsilon = K.random_normal(shape=(K.shape(z_mean)[0], latent_dim))
+    #         return z_mean + K.exp(z_log_var / 2) * epsilon
+
+    #     z = Lambda(sampling, output_shape=(latent_dim,))([z_mean, z_log_var])
+
+    #     # Decoder
+    #     decoder_h = Dense(64, activation='relu')
+    #     decoder_mean = Dense(input_dim, activation='linear')
+    #     h_decoded = decoder_h(z)
+    #     outputs = decoder_mean(h_decoded)
+
+    #     # Define VAE
+    #     vae = Model(inputs, outputs)
+    #     reconstruction_loss = mse(inputs, outputs) * input_dim
+    #     kl_loss = -0.5 * K.sum(1 + z_log_var - K.square(z_mean) - K.exp(z_log_var), axis=-1)
+    #     vae_loss = K.mean(reconstruction_loss + kl_loss)
+    #     vae.add_loss(vae_loss)
+    #     vae.compile(optimizer='adam')
+
+    #     return vae
+
+    # def generate_synthetic_data(self, vae, class_data, num_samples=10):
+    #     # Generate synthetic data using the trained VAE
+    #     latent_dim = vae.get_layer('lambda').output_shape[1]
+    #     z_samples = np.random.normal(size=(num_samples, latent_dim))
+    #     decoder = Model(vae.input, vae.output)
+    #     synthetic_spectra = decoder.predict(z_samples)
+    #     return synthetic_spectra
+
     def naive_classifier(self, labels="genus"):
         # Create a naive classifier that calculates the mean spectrum for each label in the training data.
         label_to_mean_spectrum = {}
-        for train_sample in self.train_data:
+        for train_sample in self.train_data_smote:
             # Use genus or genus+species label based on input parameter
             label = train_sample['genus_label'] if labels == "genus" else train_sample['genus_species_label']
             spectrum = train_sample['spectrum']
@@ -93,8 +370,8 @@ class SimpleFungusIdentifier:
 
     def evaluate_naive_classifier(self, labels="genus"):
         # Evaluate the naive classifier on the test data
-        spectra = np.array([entry['spectrum'] for entry in self.test_data])
-        true_labels = [entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.test_data]
+        spectra = np.array([entry['spectrum'] for entry in self.test_data_pca])
+        true_labels = [entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.test_data_pca]
 
         predicted_labels = []
         # Predict the label for each spectrum in the test set
@@ -118,8 +395,8 @@ class SimpleFungusIdentifier:
 
     def knn_classifier(self, n_neighbors=5, labels="genus"):
         # Train a K-Nearest Neighbors (KNN) classifier on the training data
-        spectra = np.array([entry['spectrum'] for entry in self.train_data])
-        train_labels = [entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.train_data]
+        spectra = np.array([entry['spectrum'] for entry in self.train_data_smote])
+        train_labels = [entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.train_data_smote]
 
         # Create and fit the KNN classifier
         knn = KNeighborsClassifier(n_neighbors=n_neighbors)
@@ -129,8 +406,8 @@ class SimpleFungusIdentifier:
 
     def evaluate_knn_classifier(self, knn, labels="genus"):
         # Evaluate the KNN classifier on the test data
-        spectra = np.array([entry['spectrum'] for entry in self.test_data])
-        true_labels = [entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.test_data]
+        spectra = np.array([entry['spectrum'] for entry in self.test_data_pca])
+        true_labels = [entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.test_data_pca]
 
         # Predict the labels using the trained KNN classifier
         predicted_labels = knn.predict(spectra)
@@ -194,6 +471,18 @@ fungus_identifier = SimpleFungusIdentifier(dataset_path)
 
 # Load and split the data into training and test sets. This n_step is a hyperparameter that can be tuned. In [https://www.nature.com/articles/s41591-021-01619-9], it was defined to 3, but it can should be cross-validated.
 fungus_identifier.load_and_split_data(n_step=6)
+
+# # Grid-search PCA+ LASSO
+# # Define grid search parameters
+# n_components_list = [10, 20, 30, 40, 50, 70, 100, 150]
+# alpha_list = [0.1, 0.05, 0.01, 0.005, 0.001]
+
+# # Run grid search for PCA + LASSO
+# results_df = fungus_identifier.grid_search_pca_lasso(n_components_list, alpha_list)
+
+# # Save or display results
+# results_df.to_csv("pca_lasso_results.csv", index=False)
+# print("Grid search results saved to pca_lasso_results.csv.")
 
 # Plot data distribution
 fungus_identifier.plot_data_distribution()

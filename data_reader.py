@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import binned_statistic
 import matplotlib.pyplot as plt
-
+from scipy.ndimage import gaussian_filter1d
 
 
 # Code copied from maldi-nn, thanks to the authors. Adapted by Alejandro Guerrero-López.
@@ -227,8 +227,14 @@ class MaldiDataset:
                                 # Search for "acqu" and "fid" files
                                 acqu_file, fid_file = self._find_acqu_fid_files(lecture_folder_path)
                                 if acqu_file and fid_file:
+
                                     # Read the maldi-tof spectra using from_bruker
                                     spectrum = SpectrumObject.from_bruker(acqu_file, fid_file)
+
+                                    # Apply Gaussian smoothing to raw spectrum
+                                    smoothed_intensity = gaussian_filter1d(spectrum.intensity, sigma=1)
+                                    spectrum = SpectrumObject(mz=spectrum.mz, intensity=smoothed_intensity)
+                                    
                                     # Binarize the spectrum using Binner
                                     binner = SequentialPreprocessor(
                                                 VarStabilizer(method="sqrt"),
