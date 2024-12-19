@@ -8,7 +8,7 @@ from sklearn.model_selection import train_test_split
 from data_reader import MaldiDataset
 import numpy as np
 import pandas as pd
-from scipy.spatial.distance import euclidean
+from scipy.spatial.distance import euclidean, cityblock, cosine
 from sklearn.neighbors import KNeighborsClassifier
 from collections import Counter
 import matplotlib.pyplot as plt
@@ -18,6 +18,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import LabelEncoder
 from imblearn.over_sampling import SMOTE
 from collections import Counter
+from sklearn.model_selection import GridSearchCV
 # from tensorflow.keras.models import Model
 # from tensorflow.keras.layers import Input, Dense, Lambda
 # from tensorflow.keras.losses import mse
@@ -40,7 +41,9 @@ class SimpleFungusIdentifier:
         self.train_data = []
         self.test_data = []
 
+
     def load_and_split_data(self, n_step=3):
+
         # Load the dataset using MaldiDataset
         dataset = MaldiDataset(self.dataset_path, n_step=n_step)
         dataset.parse_dataset()  # Parse the dataset from the specified path
@@ -85,7 +88,7 @@ class SimpleFungusIdentifier:
         # total number of classes to predict (genus+species)
         print(f"Number of classes to predict: {len(set([entry['genus_species_label'] for entry in self.train_data]))}")
 
-        # Prepare spectra
+        # Prepare spectra and labels
         train_spectra = np.array([sample['spectrum'] for sample in self.train_data])
         test_spectra = np.array([sample['spectrum'] for sample in self.test_data])
         train_labels = [sample['genus_species_label'] for sample in self.train_data]
@@ -94,24 +97,35 @@ class SimpleFungusIdentifier:
         # # -------------------------------------------------------------------------------------------------------------------------
         
         # PCA
-        # Apply PCA for dimensionality reduction
-        n_components = 70  # You can tune this parameter
+        # PCA for dimensionality reduction
+        n_components = 70  # Tunable parameter
         pca = PCA(n_components=n_components)
         train_spectra_pca = pca.fit_transform(train_spectra)
         test_spectra_pca = pca.transform(test_spectra)
 
         print(f"Explained Variance Ratio (first {n_components} components): {sum(pca.explained_variance_ratio_):.2f}")
 
-        # Identify minority classes
+        # Identify minority classes in training data
         label_counts = Counter(train_labels)
-        threshold = 0.1 * max(label_counts.values())
+        threshold = 0.1 * max(label_counts.values())  # Define threshold as 10% of the largest class
         minority_classes = [cls for cls, count in label_counts.items() if count < threshold]
         print(f"Minority Classes (threshold {threshold}): {minority_classes}")
 
-        # Apply SMOTE only to minority classes
-        smote = SMOTE(random_state=42)
-        train_spectra_smote, train_labels_smote = smote.fit_resample(train_spectra_pca, train_labels)
+        # Separate spectra and labels into majority and minority
+        minority_spectra = [spectrum for spectrum, label in zip(train_spectra_pca, train_labels) if label in minority_classes]
+        minority_labels = [label for label in train_labels if label in minority_classes]
+        majority_spectra = [spectrum for spectrum, label in zip(train_spectra_pca, train_labels) if label not in minority_classes]
+        majority_labels = [label for label in train_labels if label not in minority_classes]
 
+        # Apply SMOTE only to the minority classes
+        smote = SMOTE(random_state=42)
+        minority_spectra_smote, minority_labels_smote = smote.fit_resample(minority_spectra, minority_labels)
+
+        # Combine the oversampled minority classes with the original majority classes
+        train_spectra_smote = np.vstack((minority_spectra_smote, majority_spectra))
+        train_labels_smote = np.hstack((minority_labels_smote, majority_labels))
+
+        # Debug: Print class distribution before and after SMOTE
         print(f"Class distribution before SMOTE: {label_counts}")
         print(f"Class distribution after SMOTE: {Counter(train_labels_smote)}")
 
@@ -126,6 +140,7 @@ class SimpleFungusIdentifier:
             {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
             for spectrum, label in zip(test_spectra_pca, [entry['genus_species_label'] for entry in self.test_data])
         ]
+
 
         # # --------------------------------------------------------------------------------------------------------------------------
 
@@ -350,7 +365,15 @@ class SimpleFungusIdentifier:
     #     synthetic_spectra = decoder.predict(z_samples)
     #     return synthetic_spectra
 
-    def naive_classifier(self, labels="genus"):
+    def naive_classifier(self, labels="genus", use_weights=False):
+        # Calculate class weights if needed
+        if use_weights:
+            class_counts = Counter([entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.train_data_smote])
+            total_samples = sum(class_counts.values())
+            class_weights = {label: total_samples / count for label, count in class_counts.items()}
+        else:
+            class_weights = None
+
         # Create a naive classifier that calculates the mean spectrum for each label in the training data.
         label_to_mean_spectrum = {}
         for train_sample in self.train_data_smote:
@@ -362,13 +385,29 @@ class SimpleFungusIdentifier:
             label_to_mean_spectrum[label].append(spectrum)
 
         # Calculate the mean spectrum for each label
-        for label in label_to_mean_spectrum:
-            label_to_mean_spectrum[label] = np.mean(label_to_mean_spectrum[label], axis=0)
+        # for label in label_to_mean_spectrum:
+        #     label_to_mean_spectrum[label] = np.mean(label_to_mean_spectrum[label], axis=0)
 
+        # Calculate mean spectrum (weighted if use_weights=True)
+        for label, spectra in label_to_mean_spectrum.items():
+            spectra_array = np.array(spectra)
+            if use_weights:
+                label_to_mean_spectrum[label] = np.average(spectra_array, axis=0, weights=np.ones(len(spectra_array)) * class_weights[label])
+            else:
+                label_to_mean_spectrum[label] = np.mean(spectra_array, axis=0)
+                
         # Store the mean spectrum for each label to use for predictions
         self.label_to_mean_spectrum = label_to_mean_spectrum
 
-    def evaluate_naive_classifier(self, labels="genus"):
+    def evaluate_naive_classifier(self, labels="genus", metric="euclidean"):
+        # Map metric names to functions
+        metric_map = {
+            "euclidean": euclidean,
+            "manhattan": cityblock,
+            "cosine": cosine
+        }
+        distance_function = metric_map.get(metric, euclidean)  # Default to euclidean if metric not recognized
+
         # Evaluate the naive classifier on the test data
         spectra = np.array([entry['spectrum'] for entry in self.test_data_pca])
         true_labels = [entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.test_data_pca]
@@ -380,7 +419,7 @@ class SimpleFungusIdentifier:
             min_label = None
             # Find the closest mean spectrum from the training data
             for label, mean_spectrum in self.label_to_mean_spectrum.items():
-                distance = euclidean(spectrum, mean_spectrum)
+                distance = distance_function(spectrum, mean_spectrum)
                 if distance < min_distance:
                     min_distance = distance
                     min_label = label
@@ -389,14 +428,52 @@ class SimpleFungusIdentifier:
         # Calculate accuracy of the naive classifier
         correct_predictions = sum([1 for true, pred in zip(true_labels, predicted_labels) if true == pred])
         accuracy = correct_predictions / len(true_labels)
-        print(f"Naive Classifier Accuracy: {accuracy:.2f}")
+        print(f"Naive Classifier Accuracy ({metric} distance): {accuracy:.2f}")
 
         return accuracy, predicted_labels, true_labels
 
-    def knn_classifier(self, n_neighbors=5, labels="genus"):
+    def tune_naive_classifier(self, labels="genus"):
+        metrics = ["euclidean", "manhattan", "cosine"]  # Distance metrics to test
+        weight_options = [False, True]  # Weighted mean vs. unweighted mean
+        best_config = None
+        best_accuracy = 0
+
+        # Iterate through all combinations of weights and metrics
+        for use_weights in weight_options:
+            for metric in metrics:
+                print(f"Testing Naive Classifier with weights={use_weights}, metric={metric}...")
+                # Train Naive Classifier
+                self.naive_classifier(labels=labels, use_weights=use_weights)
+                # Evaluate Naive Classifier
+                accuracy, _, _ = self.evaluate_naive_classifier(labels=labels, metric=metric)
+                print(f"Accuracy: {accuracy:.2f}")
+
+                # Track the best configuration
+                if accuracy > best_accuracy:
+                    best_accuracy = accuracy
+                    best_config = {"use_weights": use_weights, "metric": metric}
+
+        print(f"Best configuration: {best_config}, Accuracy: {best_accuracy:.2f}")
+        return best_config
+
+
+
+    def knn_classifier(self, n_neighbors=5, labels="genus", tune = False):
         # Train a K-Nearest Neighbors (KNN) classifier on the training data
         spectra = np.array([entry['spectrum'] for entry in self.train_data_smote])
         train_labels = [entry['genus_label'] if labels == "genus" else entry['genus_species_label'] for entry in self.train_data_smote]
+
+        if tune:
+            # Hyperparameter tuning with GridSearchCV
+            param_grid = {'n_neighbors': [3, 5, 7, 9, 11]}
+            knn = KNeighborsClassifier()
+            print("Tuning KNN hyperparameters using GridSearchCV...")
+            grid_search = GridSearchCV(knn, param_grid=param_grid, cv=5, scoring='accuracy', verbose=1, n_jobs=-1)
+            grid_search.fit(spectra, train_labels)
+
+            print(f"Best KNN parameters: {grid_search.best_params_}")
+            print(f"Best cross-validated accuracy: {grid_search.best_score_:.2f}")
+            return grid_search.best_estimator_
 
         # Create and fit the KNN classifier
         knn = KNeighborsClassifier(n_neighbors=n_neighbors)
@@ -419,22 +496,26 @@ class SimpleFungusIdentifier:
     
     def plot_data_distribution(self):
         # Plot the distribution of genus_species labels in train and test data
-        train_labels = [entry['genus_species_label'] for entry in self.train_data]
+        train_labels = [entry['genus_species_label'] for entry in self.train_data_smote]
         test_labels = [entry['genus_species_label'] for entry in self.test_data]
 
         train_counter = Counter(train_labels)
         test_counter = Counter(test_labels)
-        total_counter = train_counter + test_counter
+
+        # Combine all labels to ensure consistent plotting
+        all_labels = sorted(set(train_labels + test_labels))
+        train_counts = [train_counter[label] for label in all_labels]
+        test_counts = [test_counter[label] for label in all_labels]
 
         plt.figure(figsize=(10, 6))
         bar_width = 0.35
-        bar_positions = np.arange(len(total_counter))
-        train_bars = plt.bar(bar_positions, [train_counter[label] for label in total_counter], bar_width, label='Train')
-        test_bars = plt.bar(bar_positions + bar_width, [test_counter[label] for label in total_counter], bar_width, label='Test')
+        bar_positions = np.arange(len(all_labels))
+        plt.bar(bar_positions, train_counts, bar_width, label='Train')
+        plt.bar(bar_positions + bar_width, test_counts, bar_width, label='Test')
         plt.xlabel('Genus+Species Label')
         plt.ylabel('Number of Samples')
         plt.title('Distribution of Genus+Species Labels in Train and Test Data')
-        plt.xticks(bar_positions + bar_width / 2, total_counter.keys(), rotation=90)
+        plt.xticks(bar_positions + bar_width / 2, all_labels, rotation=90)
         plt.legend()
         plt.tight_layout()
         plt.savefig("Distribution_of_Genus_Species_Labels_in_Train_and_Test_Data.png")
@@ -490,15 +571,20 @@ fungus_identifier.plot_data_distribution()
 print("====================== GENUS LEVEL CLASSIFIERS ======================")
 # Train the Naive Classifier
 print("Training Naive Classifier...")
-fungus_identifier.naive_classifier(labels="genus")
+fungus_identifier.naive_classifier(labels="genus", use_weights=False)
+
+# print("Tuning Naive Classifier...")
+# best_naive_config = fungus_identifier.tune_naive_classifier(labels="genus")
+
+# print(f"Best Naive Classifier Configuration: {best_naive_config}")
 
 # Evaluate the Naive Classifier
 print("Evaluating Naive Classifier...")
-naive_accuracy = fungus_identifier.evaluate_naive_classifier(labels="genus")
+naive_accuracy = fungus_identifier.evaluate_naive_classifier(labels="genus", metric="euclidean")
 
 # Train and evaluate a KNN Classifier
 print("Training KNN Classifier...")
-knn = fungus_identifier.knn_classifier(n_neighbors=5, labels="genus")
+knn = fungus_identifier.knn_classifier(n_neighbors=3, labels="genus", tune=False)
 
 print("Evaluating KNN Classifier...")
 knn_accuracy = fungus_identifier.evaluate_knn_classifier(knn, labels="genus")
@@ -506,18 +592,23 @@ knn_accuracy = fungus_identifier.evaluate_knn_classifier(knn, labels="genus")
 print("====================== GENUS SPECIES LEVEL CLASSIFIERS ======================")
 # Train the Naive Classifier
 print("Training Naive Classifier...")
-fungus_identifier.naive_classifier(labels="genus_species")
+fungus_identifier.naive_classifier(labels="genus_species", use_weights=False)
+
+# print("Tuning Naive Classifier...")
+# best_naive_config = fungus_identifier.tune_naive_classifier(labels="genus_species")
+
+# print(f"Best Naive Classifier Configuration: {best_naive_config}")
 
 # Evaluate the Naive Classifier
 print("Evaluating Naive Classifier...")
-naive_accuracy, naive_pred, naive_true = fungus_identifier.evaluate_naive_classifier(labels="genus_species")
+naive_accuracy, naive_pred, naive_true = fungus_identifier.evaluate_naive_classifier(labels="genus_species", metric="cosine")
 
 # Plot the accuracy per label for the Naive Classifier
 fungus_identifier.plot_accuracy_per_label(naive_true, naive_pred, model_name="Naive")
 
 # Train and evaluate a KNN Classifier
 print("Training KNN Classifier...")
-knn = fungus_identifier.knn_classifier(n_neighbors=5, labels="genus_species")
+knn = fungus_identifier.knn_classifier(n_neighbors=3, labels="genus_species", tune=False)
 
 print("Evaluating KNN Classifier...")
 knn_accuracy, knn_pred, knn_true = fungus_identifier.evaluate_knn_classifier(knn, labels="genus_species")
