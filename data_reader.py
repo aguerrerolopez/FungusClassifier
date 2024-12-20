@@ -10,7 +10,11 @@ import numpy as np
 from scipy.stats import binned_statistic
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d
-
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+import numpy as np
 
 # Code copied from maldi-nn, thanks to the authors. Adapted by Alejandro Guerrero-López.
 
@@ -257,6 +261,24 @@ class MaldiDataset:
                                         'genus_label': genus,
                                         'genus_species_label': genus_species_label
                                     })
+        print("Parsed dataset samples:")
+        for idx, sample in enumerate(self.data):
+            print(f"Sample {idx}: {sample}")
+
+        X = np.array([entry['spectrum'] for entry in self.data])
+        y = np.array([entry['genus_species_label'] for entry in self.data])
+
+        # Handle imbalance using the chosen method
+        X_balanced, y_balanced = handle_imbalance(X, y, method="VAE")
+
+       # Update self.data with balanced data
+        self.data = [{
+            'spectrum': spectrum,
+            'genus_species_label': label,
+            'unique_id_label': f"synthetic_{i}"  # unique ID in Synthetic data
+        } for i, (spectrum, label) in enumerate(zip(X_balanced, y_balanced))]
+
+        print(f"Balanced dataset samples: {len(self.data)}") 
 
     def _parse_folder_name(self, folder_name):
         # Split folder name into genus, species, and hospital code
@@ -617,6 +639,115 @@ class Binarizer:
             mz=SpectrumObj.mz,
         )
         return s
+
+#VAE
+def train_vae(X, latent_dim=10, epochs=10, batch_size=16):
+    if X is None or len(X) == 0:
+        raise ValueError("Input data X is empty or None.")
+    
+    if len(X.shape) != 2:
+        raise ValueError(f"Input data X must be 2D, but got shape {X.shape}.")
+
+    input_dim = X.shape[1]
+
+    # Convert X to PyTorch tensor
+    X_tensor = torch.tensor(X, dtype=torch.float32)
+    dataset = TensorDataset(X_tensor)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    # Initialize the VAE model
+    vae = VAE(input_dim, latent_dim)
+    optimizer = optim.Adam(vae.parameters(), lr=0.001)
+
+    # Training loop
+    for epoch in range(epochs):
+        for batch in dataloader:
+            x_batch = batch[0]
+            reconstructed, z_mean, z_log_var = vae(x_batch)
+
+            # Reconstruction loss (MSE)
+            reconstruction_loss = nn.functional.mse_loss(reconstructed, x_batch, reduction='sum')
+
+            # KL divergence
+            kl_loss = -0.5 * torch.sum(1 + z_log_var - z_mean.pow(2) - z_log_var.exp())
+
+            # Total loss
+            loss = reconstruction_loss + kl_loss
+
+            # Backpropagation
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
+
+    return vae
+
+
+def generate_synthetic_data_with_vae(X, y, num_samples_per_class=10, latent_dim=10):
+    unique_classes = np.unique(y)
+    synthetic_X = []
+    synthetic_y = []
+
+    for cls in unique_classes:
+        # Extract data for the current class
+        class_data = X[y == cls]
+
+        if len(class_data) < 2:
+            # Skip classes with insufficient data
+            print(f"Skipping class {cls} due to insufficient samples.")
+            continue
+
+        # Ensure class_data is 2D
+        if len(class_data.shape) == 1:
+            class_data = class_data.reshape(-1, 1)
+
+        # Train a VAE for the current class
+        vae = train_vae(class_data, latent_dim=latent_dim)
+
+        # Generate synthetic data
+        z_samples = torch.randn(num_samples_per_class, latent_dim)
+        with torch.no_grad():
+            generated_data = vae.decode(z_samples)
+        # Ensure generated_data is a numpy array
+        if isinstance(generated_data, list):
+            generated_data = np.array(generated_data)
+
+        # Debugging output
+        print(f"Generated data shape: {generated_data.shape}")
+        # Ensure generated_data is converted to numpy array
+        if isinstance(generated_data, torch.Tensor):
+            generated_data = generated_data.cpu().numpy()  # Convert to numpy array if torch tensor
+        elif isinstance(generated_data, list):
+            generated_data = np.array(generated_data)  # Convert list to numpy array
+
+        # Ensure generated data has the same number of features as the original class data
+        if generated_data.shape[1] != X.shape[1]:
+            generated_data = np.tile(generated_data, (1, X.shape[1] // generated_data.shape[1] + 1))[:, :X.shape[1]]
+
+        synthetic_X.append(generated_data)
+        synthetic_y.extend([cls] * num_samples_per_class)
+
+    # Combine all synthetic data
+    if len(synthetic_X) == 0:
+        print("No synthetic data generated. Returning original data.")
+        return X, y  # Return original data if no synthetic data generated.
+
+    synthetic_X = np.vstack(synthetic_X)
+    synthetic_y = np.array(synthetic_y)
+
+    return synthetic_X, synthetic_y
+
+
+def handle_imbalance(X, y, method="VAE", latent_dim=10, num_samples_per_class=10):
+    if method == "VAE":
+        synthetic_X, synthetic_y = generate_synthetic_data_with_vae(
+            X, y, latent_dim=latent_dim, num_samples_per_class=num_samples_per_class
+        )
+        return np.vstack((X, synthetic_X)), np.hstack((y, synthetic_y))
+    else:
+        raise ValueError(f"Unsupported method: {method}. Currently supports only 'VAE'.")
+
 
 
 class SequentialPreprocessor:
