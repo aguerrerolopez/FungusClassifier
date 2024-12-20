@@ -19,6 +19,8 @@ from sklearn.preprocessing import LabelEncoder
 from imblearn.over_sampling import SMOTE
 from collections import Counter
 from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import plotly.figure_factory as ff
 # from tensorflow.keras.models import Model
 # from tensorflow.keras.layers import Input, Dense, Lambda
 # from tensorflow.keras.losses import mse
@@ -544,6 +546,98 @@ class SimpleFungusIdentifier:
         plt.savefig(f"{model_name}_Classifier_Accuracy_per_Genus_Species_Label.png")
         # plt.show()
 
+    def plot_confusion_matrix(self, y_true, y_pred, class_names, model_name="Classifier"):
+        """
+        Plot the confusion matrix for a classifier.
+
+        Args:
+        - y_true: True labels.
+        - y_pred: Predicted labels.
+        - class_names: List of class names.
+        - model_name: Name of the classifier (for the title).
+        """
+        cm = confusion_matrix(y_true, y_pred, labels=class_names)
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+        plt.figure(figsize=(48, 32))
+        disp.plot(cmap="Blues", xticks_rotation="vertical", values_format="d")
+        plt.title(f"Confusion Matrix for {model_name}")
+        plt.tight_layout()
+        plt.savefig(f"{model_name}_Confusion_Matrix.png")
+        #plt.show()
+
+    # INTERACTIVE PLOT OF THE CONFUSION MATRIX
+    def plot_interactive_confusion_matrix(self, true_labels, predicted_labels, class_names, model_name="Classifier"):
+        # Generate confusion matrix
+        cm = confusion_matrix(true_labels, predicted_labels, labels=class_names)
+
+        # Create a heatmap using plotly
+        fig = ff.create_annotated_heatmap(
+            z=cm,
+            x=class_names,
+            y=class_names,
+            annotation_text=cm,  # Use the raw counts
+            colorscale="Viridis",
+            showscale=True
+        )
+
+        # Update layout for better readability
+        fig.update_layout(
+            title=f"Interactive Confusion Matrix for {model_name}",
+            xaxis=dict(title="Predicted Label", tickangle=45),
+            yaxis=dict(title="True Label", tickangle=-45),
+            width=1000, height=1000
+        )
+
+        # Show the plot
+        fig.show()
+
+    def calculate_metrics(self, true_labels, predicted_labels, class_names, output_csv="metrics.csv"):
+        """
+        Calculate precision, recall, and accuracy for each class and overall.
+
+        Args:
+            true_labels: List of true labels.
+            predicted_labels: List of predicted labels.
+            class_names: List of all possible class names.
+
+        Returns:
+            metrics_dict: Dictionary with precision, recall, and accuracy for each class and overall.
+        """
+        cm = confusion_matrix(true_labels, predicted_labels, labels=class_names)
+
+        # Calculate precision, recall, and F1-score per class
+        tp = np.diag(cm)  # True Positives
+        fp = cm.sum(axis=0) - tp  # False Positives
+        fn = cm.sum(axis=1) - tp  # False Negatives
+        tn = cm.sum() - (tp + fp + fn)  # True Negatives
+
+        # Avoid division by zero
+        precision = np.divide(tp, (tp + fp), out=np.zeros_like(tp, dtype=float), where=(tp + fp) != 0)
+        recall = np.divide(tp, (tp + fn), out=np.zeros_like(tp, dtype=float), where=(tp + fn) != 0)
+        accuracy_per_class = np.divide(tp + tn, cm.sum(axis=None), out=np.zeros_like(tp, dtype=float), where=cm.sum(axis=None) != 0)
+
+        # Overall metrics
+        overall_accuracy = np.trace(cm) / np.sum(cm)  # Overall accuracy
+        macro_precision = np.mean(precision)  # Macro-averaged precision
+        macro_recall = np.mean(recall)  # Macro-averaged recall
+
+        # Store the results in a dictionary
+        metrics = {
+            "Class": class_names + ["Overall"],
+            "Precision": list(precision) + [macro_precision],
+            "Recall": list(recall) + [macro_recall],
+            "Accuracy": list(accuracy_per_class) + [overall_accuracy]
+        }
+
+        # Convert to DataFrame and save
+        metrics_df = pd.DataFrame(metrics)
+        metrics_df.to_csv(output_csv, index=False)
+        print(f"Metrics saved to {output_csv}")
+
+        return metrics
+
+
+
 # Define the dataset path (update this path to where your dataset is located)
 dataset_path = "data/fungus_db"
 
@@ -616,7 +710,21 @@ knn_accuracy, knn_pred, knn_true = fungus_identifier.evaluate_knn_classifier(knn
 # Plot the accuracy per label for the KNN Classifier
 fungus_identifier.plot_accuracy_per_label(knn_true, knn_pred, model_name="KNN")
 
+# Confusion matrix
+class_names = list(fungus_identifier.label_to_mean_spectrum.keys())
+fungus_identifier.plot_confusion_matrix(naive_true, naive_pred, class_names, model_name="Naive Classifier")
+fungus_identifier.plot_confusion_matrix(knn_true, knn_pred, class_names, model_name="KNN Classifier")
 
+# Interactive confusion matrix
+# fungus_identifier.plot_interactive_confusion_matrix(naive_true, naive_pred, class_names, model_name="Naive Classifier")
+# fungus_identifier.plot_interactive_confusion_matrix(knn_true, knn_pred, class_names, model_name="KNN Classifier")
+
+# Confusion metrics
+naive_metrics = fungus_identifier.calculate_metrics(naive_true, naive_pred, class_names, output_csv="naive_classifier_metrics.csv")
+knn_metrics = fungus_identifier.calculate_metrics(knn_true, knn_pred, class_names, output_csv="knn_classifier_metrics.csv")
+
+
+# -------------------------------------------------------------------------------------------------------------------------------
 
 # This script provides a starting point for students to understand the process of loading data,
 # training simple classifiers (naive and KNN), and evaluating their performance on fungal data.
