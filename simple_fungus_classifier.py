@@ -683,6 +683,84 @@ knn = fungus_identifier.knn_classifier(n_neighbors=3, labels="genus", tune=False
 print("Evaluating KNN Classifier...")
 knn_accuracy = fungus_identifier.evaluate_knn_classifier(knn, labels="genus")
 
+# Convert spectra and labels to arrays (if not already)
+train_spectra = np.array([entry['spectrum'] for entry in fungus_identifier.train_data_smote])
+test_spectra = np.array([entry['spectrum'] for entry in fungus_identifier.test_data_pca])
+
+# Sample test data for SHAP (use a subset for faster calculation)
+X_train_sampled = train_spectra[:100]  # Adjust sample size as needed
+X_test_sampled = test_spectra[:10]  # Adjust sample size as needed
+
+from lime.lime_tabular import LimeTabularExplainer
+# LIME
+print("Calculating LIME explanations for KNN Classifier...")
+explainer_lime = LimeTabularExplainer(
+    train_spectra, 
+    training_labels=[entry['genus_species_label'] for entry in fungus_identifier.train_data_smote],
+    feature_names=[f"Feature {i}" for i in range(train_spectra.shape[1])],
+    class_names=list(set([entry['genus_species_label'] for entry in fungus_identifier.train_data_smote])),
+    mode="classification"
+)
+
+# Explain the first instance of the test set
+instance_to_explain = X_test_sampled[0]
+explanation = explainer_lime.explain_instance(
+    instance_to_explain,
+    knn.predict_proba,
+    num_features=10
+)
+
+# Show the explanation in text
+print(explanation.as_list())
+
+# Visualize the explanation in a plot
+explanation.as_pyplot_figure()
+# Adjust layout to ensure the text fits within the figure
+plt.tight_layout(rect=[0, 0, 1, 1])  # Adjust the margins as needed
+plt.savefig("lime_explanation_plot_adjusted.png", bbox_inches="tight")  # Save with adjusted bounding box
+plt.show()
+"""# Add SHAP explainability after evaluation
+import shap
+
+print("Calculating SHAP values for KNN Classifier...")
+X_train = np.array([entry['spectrum'] for entry in fungus_identifier.train_data_smote], dtype=float)
+X_test = np.array([entry['spectrum'] for entry in fungus_identifier.test_data_pca], dtype=float)
+
+# Use a subset for SHAP (reduce size for faster calculations)
+X_train_sampled = X_train[:100]  # Adjust as necessary
+X_test_sampled = X_test[:10]  # Adjust as necessary
+
+# Ensure all data is in float format
+X_train_sampled = np.array(X_train_sampled, dtype=float)
+X_test_sampled = np.array(X_test_sampled, dtype=float)
+
+# Debugging: Print the data type of the samples
+print(f"X_train_sampled dtype: {X_train_sampled.dtype}")
+print(f"X_test_sampled dtype: {X_test_sampled.dtype}")
+
+# Ensure the model's prediction outputs numeric data
+knn_predictions = knn.predict(X_train_sampled[:1])
+print(f"KNN prediction output: {knn_predictions}, dtype: {type(knn_predictions[0])}")
+
+# Initialize SHAP explainer with KNN
+try:
+    explainer = shap.KernelExplainer(knn.predict, X_train_sampled)
+    print("SHAP KernelExplainer initialized successfully.")
+except Exception as e:
+    print(f"Error initializing SHAP KernelExplainer: {e}")
+    raise e
+
+# Calculate SHAP values for test data
+try:
+    shap_values = explainer.shap_values(X_test_sampled)
+    print("SHAP values calculated successfully.")
+except Exception as e:
+    print(f"Error calculating SHAP values: {e}")
+    raise e
+
+# Visualize SHAP values
+shap.summary_plot(shap_values, X_test_sampled, feature_names=[f"Feature {i}" for i in range(X_test_sampled.shape[1])])
+"""
 print("====================== GENUS SPECIES LEVEL CLASSIFIERS ======================")
 # Train the Naive Classifier
 print("Training Naive Classifier...")
@@ -706,6 +784,53 @@ knn = fungus_identifier.knn_classifier(n_neighbors=3, labels="genus_species", tu
 
 print("Evaluating KNN Classifier...")
 knn_accuracy, knn_pred, knn_true = fungus_identifier.evaluate_knn_classifier(knn, labels="genus_species")
+
+# LIME
+print("Calculating LIME explanations for KNN Classifier...")
+explainer_lime = LimeTabularExplainer(
+    train_spectra, 
+    training_labels=[entry['genus_species_label'] for entry in fungus_identifier.train_data_smote],
+    feature_names=[f"Feature {i}" for i in range(train_spectra.shape[1])],
+    class_names=list(set([entry['genus_species_label'] for entry in fungus_identifier.train_data_smote])),
+    mode="classification"
+)
+
+# Explain the first instance of the test set
+instance_to_explain = X_test_sampled[0]
+explanation = explainer_lime.explain_instance(
+    instance_to_explain,
+    knn.predict_proba,
+    num_features=10
+)
+
+# Show the explanation in text
+print(explanation.as_list())
+
+# Visualize the explanation in a plot
+explanation.as_pyplot_figure()
+# Adjust layout to ensure the text fits within the figure
+plt.tight_layout(rect=[0, 0, 1, 1])  # Adjust the margins as needed
+plt.savefig("lime_explanation_plot_adjusted.png", bbox_inches="tight")  # Save with adjusted bounding box
+plt.show()
+"""print("Calculating SHAP values for KNN Classifier...")
+
+# Select data to explain
+X_train = np.array([entry['spectrum'] for entry in fungus_identifier.train_data_smote], dtype=float)
+X_test = np.array([entry['spectrum'] for entry in fungus_identifier.test_data_pca], dtype=float)
+
+# Use a subset for SHAP (reduce size for faster calculations)
+X_train_sampled = X_train[:100]  # Adjust as necessary
+X_test_sampled = X_test[:10]  # Adjust as necessary
+
+# Initialize SHAP explainer with KNN
+explainer = shap.KernelExplainer(knn.predict, X_train_sampled)
+
+# Calculate SHAP values for test samples
+shap_values = explainer.shap_values(X_test_sampled)
+
+# Visualize SHAP values for the first test sample
+shap.summary_plot(shap_values, X_test_sampled, feature_names=[f"Feature {i}" for i in range(X_test_sampled.shape[1])])
+"""
 
 # Plot the accuracy per label for the KNN Classifier
 fungus_identifier.plot_accuracy_per_label(knn_true, knn_pred, model_name="KNN")
