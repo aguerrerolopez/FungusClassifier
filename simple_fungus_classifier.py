@@ -44,7 +44,7 @@ class SimpleFungusIdentifier:
         self.test_data = []
 
 
-    def load_and_split_data(self, n_step=3):
+    def load_and_split_data(self, n_step=3, imbalance_method="SMOTE", latent_dim=10, num_samples_per_class=10):
 
         # Load the dataset using MaldiDataset
         dataset = MaldiDataset(self.dataset_path, n_step=n_step)
@@ -118,8 +118,62 @@ class SimpleFungusIdentifier:
         minority_labels = [label for label in train_labels if label in minority_classes]
         majority_spectra = [spectrum for spectrum, label in zip(train_spectra_pca, train_labels) if label not in minority_classes]
         majority_labels = [label for label in train_labels if label not in minority_classes]
+        print(f"Explained Variance Ratio (first {n_components} components): {sum(pca.explained_variance_ratio_):.2f}")
+  
+        # Handle class imbalance using the chosen method
+        if imbalance_method == "VAE":
+            minority_spectra = np.array([spectrum for spectrum, label in zip(train_spectra_pca, train_labels) if label in minority_classes])
+            minority_labels = np.array([label for label in train_labels if label in minority_classes])
+            majority_spectra = np.array([spectrum for spectrum, label in zip(train_spectra_pca, train_labels) if label not in minority_classes])
+            majority_labels = np.array([label for label in train_labels if label not in minority_classes])
 
-        # Apply SMOTE only to the minority classes
+            
+            print("Applying VAE for imbalance handling...")
+            
+            # Ensure minority_spectra is 2D
+            if len(minority_spectra.shape) != 2:
+                minority_spectra = np.expand_dims(minority_spectra, axis=1)
+
+            # Debugging output
+            print(f"Adjusted minority_spectra shape for VAE: {minority_spectra.shape}")
+            # Generate synthetic data for minority classes using VAE
+            minority_spectra_vae, minority_labels_vae = handle_imbalance(
+                minority_spectra, minority_labels, method="VAE", latent_dim=latent_dim, num_samples_per_class=num_samples_per_class
+            )
+
+            # Combine the oversampled minority classes with the original majority classes
+            train_spectra_vae = np.vstack((minority_spectra_vae, majority_spectra))
+            train_labels_vae = np.hstack((minority_labels_vae, majority_labels))
+
+            # Debug: Print class distribution before and after VAE
+            print(f"Class distribution before VAE: {label_counts}")
+            print(f"Class distribution after VAE: {Counter(train_labels_vae)}")
+
+            # Reformat VAE-transformed training data
+            self.train_data_vae = [
+                {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+                for spectrum, label in zip(train_spectra_vae, train_labels_vae)
+            ]
+            
+        elif imbalance_method == "SMOTE":   
+            # Apply SMOTE only to the minority classes
+            smote = SMOTE(random_state=42)
+            minority_spectra_smote, minority_labels_smote = smote.fit_resample(minority_spectra, minority_labels)
+
+            # Combine the oversampled minority classes with the original majority classes
+            train_spectra_smote = np.vstack((minority_spectra_smote, majority_spectra))
+            train_labels_smote = np.hstack((minority_labels_smote, majority_labels))
+
+            # Debug: Print class distribution before and after SMOTE
+            print(f"Class distribution before SMOTE: {label_counts}")
+            print(f"Class distribution after SMOTE: {Counter(train_labels_smote)}")
+
+            # Reformat SMOTE-transformed training data
+            self.train_data_smote = [
+                {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
+                for spectrum, label in zip(train_spectra_smote, train_labels_smote)
+            ]
+        """# Apply only SMOTE only to the minority classes
         smote = SMOTE(random_state=42)
         minority_spectra_smote, minority_labels_smote = smote.fit_resample(minority_spectra, minority_labels)
 
@@ -135,7 +189,7 @@ class SimpleFungusIdentifier:
         self.train_data_smote = [
             {'spectrum': spectrum, 'genus_species_label': label, 'genus_label': label.split()[0]}
             for spectrum, label in zip(train_spectra_smote, train_labels_smote)
-        ]
+        ]"""
 
         # Reformat PCA-transformed test data
         self.test_data_pca = [
@@ -645,7 +699,7 @@ dataset_path = "data/fungus_db"
 fungus_identifier = SimpleFungusIdentifier(dataset_path)
 
 # Load and split the data into training and test sets. This n_step is a hyperparameter that can be tuned. In [https://www.nature.com/articles/s41591-021-01619-9], it was defined to 3, but it can should be cross-validated.
-fungus_identifier.load_and_split_data(n_step=6)
+fungus_identifier.load_and_split_data(n_step=6, imbalance_method="SMOTE", latent_dim=10, num_samples_per_class=10)
 
 # # Grid-search PCA+ LASSO
 # # Define grid search parameters
